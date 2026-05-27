@@ -14,6 +14,7 @@ from matplotlib.patches import Rectangle
 import matplotlib.patches as patches
 from matplotlib.patches import ConnectionPatch
 from PIL import Image
+from .svg_swatches import make_swatch_gid
 
 ##
 ## Global vars
@@ -667,7 +668,8 @@ class Section:
              label_units=False,
              unit_label_wid_tot=0.2,
              unit_fontsize=8,
-             xticks=True):
+             xticks=True,
+             swatch_backend='png'):
         """
         Plot this section using a Style object.
 
@@ -699,10 +701,17 @@ class Section:
             Whether or not to label xticks and make associated vertical lines. 
             Default is True.
 
+        swatch_backend : {'png', 'svg'}, optional
+            Backend to use for swatches. The default ('png') preserves the
+            historical raster swatch behavior. Use 'svg' with
+            :func:`pystrat.savefig_svg` for vector swatches in SVG output.
+
         """
         # get the attributes - implicitly checks if the attributes exist
         if not self.style_compatibility(style):
             raise ValueError('Style is not compatible with section.')
+        if swatch_backend not in ('png', 'svg'):
+            raise ValueError("swatch_backend must be 'png' or 'svg'")
 
         # initialize
         if ax == None:
@@ -753,8 +762,20 @@ class Section:
                             0, this_width, strat_height,
                             strat_height + this_thickness
                         ]
-                        plot_swatch(this_swatch, extent, ax,
-                                    swatch_wid=style.swatch_wid)             
+                        if swatch_backend == 'svg':
+                            svg_swatch = Rectangle(
+                                (extent[0], extent[2]),
+                                extent[1] - extent[0],
+                                extent[3] - extent[2],
+                                facecolor='none',
+                                edgecolor='none',
+                                linewidth=0,
+                                zorder=2.1)
+                            svg_swatch.set_gid(make_swatch_gid(this_swatch, i))
+                            ax.add_patch(svg_swatch)
+                        elif swatch_backend == 'png':
+                            plot_swatch(this_swatch, extent, ax,
+                                        swatch_wid=style.swatch_wid)
 
             # count the stratigraphic height
             strat_height = strat_height + this_thickness
@@ -1450,7 +1471,8 @@ class Style():
                     legend_unit_height=0.25,
                     fontsize=10,
                     annotations_loc='bottom',
-                    facies_order=None):
+                    facies_order=None,
+                    swatch_backend='png'):
         """
         Plot a legend for this Style object.
 
@@ -1467,6 +1489,9 @@ class Style():
             Location of the annotations, default is 'bottom'. Options are 'right', 'bottom', or 'top'.
         facies_order : 1d array_like, optional
             Order in which to plot facies in the legend. If None, sorts by width.
+        swatch_backend : {'png', 'svg'}, optional
+            Backend to use for swatches. Use 'svg' with
+            :func:`pystrat.savefig_svg` for vector swatches in SVG output.
 
         Returns
         -------
@@ -1477,6 +1502,8 @@ class Style():
         """
 
         # extract attributes
+        if swatch_backend not in ('png', 'svg'):
+            raise ValueError("swatch_backend must be 'png' or 'svg'")
         labels = self.labels
         color_values = self.color_values
         width_values = self.width_values
@@ -1539,8 +1566,20 @@ class Style():
                     extent = [
                         0, width_values[i], strat_height, strat_height + 1
                     ]
-                    plot_swatch(swatch_values[i], extent, ax,
-                                swatch_wid=self.swatch_wid)
+                    if swatch_backend == 'svg':
+                        svg_swatch = Rectangle(
+                            (extent[0], extent[2]),
+                            extent[1] - extent[0],
+                            extent[3] - extent[2],
+                            facecolor='none',
+                            edgecolor='none',
+                            linewidth=0,
+                            zorder=2.1)
+                        svg_swatch.set_gid(make_swatch_gid(swatch_values[i], i))
+                        ax.add_patch(svg_swatch)
+                    elif swatch_backend == 'png':
+                        plot_swatch(swatch_values[i], extent, ax,
+                                    swatch_wid=self.swatch_wid)
 
             # label the unit
             # ax.text(-0.01,
