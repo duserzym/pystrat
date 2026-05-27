@@ -1,4 +1,4 @@
-"""SVG swatch export helpers for matplotlib pystrat figures."""
+"""SVG export helpers for matplotlib pystrat figures."""
 
 from __future__ import annotations
 
@@ -17,13 +17,17 @@ from matplotlib.patches import Rectangle
 SVG_NS = "http://www.w3.org/2000/svg"
 XLINK_NS = "http://www.w3.org/1999/xlink"
 SWATCH_GID_RE = re.compile(r"^pystrat-swatch-(\d+)(?:-.+)?$")
+ANNOTATION_GID_RE = re.compile(r"^pystrat-annotation-(.+)$")
 __all__ = [
     "available_svg_swatches",
+    "inject_annotation_previews",
     "inject_swatch_patterns",
     "inject_swatch_previews",
+    "make_annotation_gid",
     "make_swatch_gid",
     "plot_svg_swatch_catalog",
     "savefig_svg",
+    "svg_file_viewbox_size",
 ]
 
 ET.register_namespace("", SVG_NS)
@@ -74,9 +78,13 @@ def svg_viewbox_size(svg_root):
     return width, height, view_box
 
 
-def namespace_swatch(svg_root, swatch_code, suffix=""):
-    prefix = f"sw{swatch_code}-{suffix}-" if suffix else f"sw{swatch_code}-"
-    id_prefix = prefix + "id-"
+def svg_file_viewbox_size(svg_path):
+    svg_root = ET.parse(svg_path).getroot()
+    return svg_viewbox_size(svg_root)
+
+
+def namespace_svg_asset(svg_root, prefix):
+    id_prefix = f"{prefix}-id-"
     class_styles = {}
     id_map = {}
 
@@ -123,6 +131,11 @@ def namespace_swatch(svg_root, swatch_code, suffix=""):
                 elem.set(attr, replace_ids(value))
 
 
+def namespace_swatch(svg_root, swatch_code, suffix=""):
+    prefix = f"sw{swatch_code}-{suffix}" if suffix else f"sw{swatch_code}"
+    namespace_svg_asset(svg_root, prefix)
+
+
 def shape_bbox(shape):
     if shape.tag == svg_tag("rect"):
         x = float(shape.attrib.get("x", "0"))
@@ -149,6 +162,10 @@ def make_swatch_gid(swatch_code, unique_id=None):
     if unique_id is None:
         return f"pystrat-swatch-{int(swatch_code)}"
     return f"pystrat-swatch-{int(swatch_code)}-{unique_id}"
+
+
+def make_annotation_gid(unique_id):
+    return f"pystrat-annotation-{unique_id}"
 
 
 def make_pattern_def(swatch_code, pattern_id, tile_width_pt, pattern_x=None, pattern_y=None):
@@ -275,17 +292,83 @@ def inject_swatch_previews(svg_path, output_path=None):
     return output_path
 
 
+def inject_annotation_previews(svg_path, annotation_paths, output_path=None):
+    svg_path = Path(svg_path)
+    output_path = Path(output_path) if output_path is not None else svg_path
+
+    tree = ET.parse(svg_path)
+    root = tree.getroot()
+
+    for preview_index, group in enumerate(root.iter(svg_tag("g"))):
+        group_id = group.attrib.get("id", "")
+        if not ANNOTATION_GID_RE.match(group_id):
+            continue
+
+        annotation_path = annotation_paths.get(group_id)
+        if annotation_path is None:
+            continue
+
+        shapes = list(group.iter(svg_tag("path"))) + list(group.iter(svg_tag("rect")))
+        if not shapes:
+            continue
+        bbox = shape_bbox(shapes[0])
+        if bbox is None:
+            continue
+        x, y, width, height = bbox
+
+        annotation_tree = ET.parse(annotation_path)
+        annotation_root = annotation_tree.getroot()
+        view_x, view_y, view_w, view_h, view_box = svg_viewbox_parts(annotation_root)
+        namespace_svg_asset(annotation_root, f"ann-preview-{preview_index}")
+
+        scale_x = width / view_w
+        scale_y = height / view_h
+        translate_x = x - view_x * scale_x
+        translate_y = y - view_y * scale_y
+        preview = ET.Element(
+            svg_tag("g"),
+            {"transform": f"translate({translate_x:g} {translate_y:g}) scale({scale_x:g} {scale_y:g})"},
+        )
+        for child in list(annotation_root):
+            if child.tag == svg_tag("style"):
+                continue
+            preview.append(copy.deepcopy(child))
+
+        group.insert(0, preview)
+
+    tree.write(output_path, encoding="utf-8", xml_declaration=True)
+    return output_path
+
+
+def collect_annotation_svgs(fig):
+    annotation_paths = {}
+    for artist in fig.findobj():
+        get_gid = getattr(artist, "get_gid", None)
+        if get_gid is None:
+            continue
+        gid = artist.get_gid()
+        if not gid or not ANNOTATION_GID_RE.match(gid):
+            continue
+        annotation_path = getattr(artist, "_pystrat_annotation_svg_path", None)
+        if annotation_path:
+            annotation_paths[gid] = Path(annotation_path)
+    return annotation_paths
+
+
 def savefig_svg(fig, output_path, tile_width_pt=108.0, **savefig_kwargs):
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     savefig_kwargs.setdefault("format", "svg")
     savefig_kwargs.setdefault("bbox_inches", "tight")
+    annotation_paths = collect_annotation_svgs(fig)
 
     with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as tmp:
         raw_path = Path(tmp.name)
     try:
         fig.savefig(raw_path, **savefig_kwargs)
         inject_swatch_patterns(raw_path, output_path=output_path, tile_width_pt=tile_width_pt)
+        if annotation_paths:
+            inject_annotation_previews(output_path, annotation_paths=annotation_paths, output_path=output_path)
     finally:
         raw_path.unlink(missing_ok=True)
     return output_path

@@ -4,6 +4,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 import copy
+from pathlib import Path
 
 # python things
 from importlib import resources
@@ -14,12 +15,58 @@ from matplotlib.patches import Rectangle
 import matplotlib.patches as patches
 from matplotlib.patches import ConnectionPatch
 from PIL import Image
-from .svg_swatches import make_swatch_gid
+from .svg_swatches import make_annotation_gid, make_swatch_gid, svg_file_viewbox_size
 
 ##
 ## Global vars
 ##
 mod_dir = os.path.dirname(os.path.realpath(__file__))
+DEFAULT_ANNOTATION_EXTENSIONS = {'.png', '.svg'}
+DEFAULT_ANNOTATION_SVG_ALIASES = {
+    'black shale': 'black_shale',
+    'climbing ripples': 'climbing_ripples',
+    'hcs': 'hummocky',
+    'wave ripples': 'wave_ripples',
+}
+
+
+def default_annotation_names():
+    annotation_dir = resources.files('pystrat').joinpath('annotations')
+    annotations = set()
+    for annotation_path in annotation_dir.iterdir():
+        if annotation_path.suffix.lower() in DEFAULT_ANNOTATION_EXTENSIONS:
+            annotations.add(annotation_path.stem)
+    return sorted(annotations)
+
+
+def default_annotation_png_path(annotation_name):
+    return resources.files('pystrat').joinpath('annotations', f'{annotation_name}.png')
+
+
+def resolve_annotation_svg_path(annotation_path):
+    annotation_path = Path(os.fspath(annotation_path))
+    stem = annotation_path.stem
+    candidate_paths = [annotation_path if annotation_path.suffix.lower() == '.svg' else annotation_path.with_suffix('.svg')]
+
+    for alt_stem in (
+        stem.replace(' ', '_'),
+        stem.replace('_', ' '),
+        DEFAULT_ANNOTATION_SVG_ALIASES.get(stem),
+    ):
+        if alt_stem is None:
+            continue
+        candidate_paths.append(annotation_path.with_name(f'{alt_stem}.svg'))
+
+    seen = set()
+    for candidate_path in candidate_paths:
+        candidate_key = os.fspath(candidate_path)
+        if candidate_key in seen:
+            continue
+        seen.add(candidate_key)
+        if candidate_path.is_file():
+            return candidate_path
+
+    return None
 
 
 ###############
@@ -812,7 +859,8 @@ class Section:
                 # remember to adjust starting position for the number of annotations
                 pos = [1.1, bot_coords[ii]]
                 # check that annotation is in style
-                plot_annotation(style.annotations[annotation], pos, height, ax)
+                plot_annotation(style.annotations[annotation], pos, height, ax,
+                                backend=swatch_backend)
 
         # label units
         if label_units and (self.units is not None):
@@ -1405,21 +1453,29 @@ class Style():
         if annotations is not None:
             if isinstance(annotations, list):
                 # check that all annotations are in the default set
-                default_annotations_pngs = os.listdir(resources.files('pystrat').joinpath('annotations'))
-                default_annotations = [annotation_png.split('.')[0] for annotation_png in default_annotations_pngs]
+                default_annotations = default_annotation_names()
+                validated_annotations = []
                 for annotation in annotations:
                     if annotation not in default_annotations:
                         warnings.warn(f'Annotation {annotation} not in default set and will not be plotted.')
-                        annotations.remove(annotation)
+                        continue
+                    validated_annotations.append(annotation)
                 # make into dictionary with paths to default pngs
-                annotations = {annotation: resources.files('pystrat').joinpath('annotations', f'{annotation}.png') for annotation in annotations}
+                annotations = {
+                    annotation: default_annotation_png_path(annotation)
+                    for annotation in validated_annotations
+                }
             # if annotations are a dictionary
             elif isinstance(annotations, dict):
-                # check that all annotations are png files
-                for annotation in annotations:
-                    if not os.path.isfile(annotations[annotation]):
-                        warnings.warn(f'Annotation {annotation} is not a png file. No annotation will be plotted.')
-                        del annotations[annotation]
+                validated_annotations = {}
+                for annotation, annotation_path in annotations.items():
+                    if not Path(os.fspath(annotation_path)).is_file():
+                        warnings.warn(
+                            f'Annotation {annotation} path {annotation_path} was not found. This annotation will not be plotted.'
+                        )
+                        continue
+                    validated_annotations[annotation] = annotation_path
+                annotations = validated_annotations
             else:
                 raise ValueError('Annotations must be a list or a dictionary.')
         self.annotations = annotations
@@ -1428,7 +1484,7 @@ class Style():
         self.n_labels = len(labels)
 
     @staticmethod
-    def plot_default_annotations(ax=None):
+    def plot_default_annotations(ax=None, backend='png'):
         """Plot annotations provided by pystrat.
 
         Parameters
@@ -1448,21 +1504,20 @@ class Style():
             ax = plt.axes()
 
         # retrieve default annotations
-        annotation_pngs = os.listdir(resources.files('pystrat').joinpath('annotations'))
-        annotations = [annotation_png.split('.')[0] for annotation_png in annotation_pngs]
+        annotations = default_annotation_names()
 
-        ax.set_ylim([0, len(annotation_pngs)])
+        ax.set_ylim([0, len(annotations)])
         ax.autoscale(False)
 
         # plot annotations
-        for ii, annotation_png in enumerate(annotation_pngs):
-            cur_path = resources.files('pystrat').joinpath('annotations', annotation_png)
+        for ii, annotation in enumerate(annotations):
+            cur_path = default_annotation_png_path(annotation)
             pos = [0, ii]
-            plot_annotation(cur_path, pos, 0.5, ax)
+            plot_annotation(cur_path, pos, 0.5, ax, backend=backend)
 
         ax.set_frame_on(False)
         ax.set_xticks([])
-        ax.set_yticks(0.3 + np.arange(len(annotation_pngs)))
+        ax.set_yticks(0.3 + np.arange(len(annotations)))
         ax.set_yticklabels(annotations, fontsize=10)
         ax.tick_params(axis='y', left=False)
 
@@ -1603,11 +1658,12 @@ class Style():
 
                     # for text, assume min aspect ratio of image of 0.5
                     width = height/0.5*get_axis_aspect(ax)
-                    ax.text(1.1+width, ii+0.5, list(self.annotations)[ii], 
+                    ax.text(1.1+width, ii+0.5, list(self.annotations)[ii],
                             va='center',
                             fontsize=fontsize)
-                    plot_annotation(list(self.annotations.values())[ii], pos, height, ax)
-            
+                    plot_annotation(list(self.annotations.values())[ii], pos,
+                                    height, ax, backend=swatch_backend)
+
             elif annotations_loc == 'bottom':
                 # plot each one below the column
                 for ii in range(n_annotations):
@@ -1616,25 +1672,29 @@ class Style():
 
                     # for text, assume min aspect ratio of image of 0.5
                     width = height/0.5*get_axis_aspect(ax)
-                    ax.text(0.0 - width/2, -(ii+0.5), list(self.annotations)[ii], 
+                    ax.text(0.0 - width/2, -(ii+0.5), list(self.annotations)[ii],
                             va='center',
                             ha='right',
                             fontsize=fontsize)
-                    plot_annotation(list(self.annotations.values())[ii], pos, height, ax)
+                    plot_annotation(list(self.annotations.values())[ii], pos,
+                                    height, ax, backend=swatch_backend)
 
             elif annotations_loc == 'top':
-                # plot each one below the column
+                # plot each one above the column
                 for ii in range(n_annotations):
                     height = 0.6
                     pos = [0.0, (ii + 0.5) -height/2 + self.n_labels]
 
                     # for text, assume min aspect ratio of image of 0.5
                     width = height/0.5*get_axis_aspect(ax)
-                    ax.text(0.0 - width/2, (ii+0.5) + self.n_labels, list(self.annotations)[ii], 
+                    ax.text(0.0 - width/2,
+                            (ii+0.5) + self.n_labels,
+                            list(self.annotations)[ii],
                             va='center',
                             ha='right',
                             fontsize=fontsize)
-                    plot_annotation(list(self.annotations.values())[ii], pos, height, ax)
+                    plot_annotation(list(self.annotations.values())[ii], pos,
+                                    height, ax, backend=swatch_backend)
 
         # prettify
         ax.set_xlim(0, 1)
@@ -1764,8 +1824,8 @@ def plot_swatch(swatch_code, extent, ax, swatch_wid=1.5, warn_size=False):
     ax.autoscale(False)
 
 
-def plot_annotation(annotation_path, pos, height, ax,):
-    """Plot a png of an annotation.
+def plot_annotation(annotation_path, pos, height, ax, backend='png'):
+    """Plot an annotation graphic.
 
     Parameters
     ----------  
@@ -1783,8 +1843,35 @@ def plot_annotation(annotation_path, pos, height, ax,):
 
     """
 
-    # os agnostic path
-    annotation_path = os.path.normpath(annotation_path)
+    annotation_path = Path(os.path.normpath(os.fspath(annotation_path)))
+
+    # axis inches per data unit
+    aspect_axis = get_axis_aspect(ax)
+
+    if backend == 'svg':
+        svg_path = resolve_annotation_svg_path(annotation_path)
+        if svg_path is not None:
+            dx, dy, _ = svg_file_viewbox_size(svg_path)
+            aspect_ann = dy / dx
+            width = height / aspect_ann * aspect_axis
+
+            svg_annotation = Rectangle(
+                (pos[0], pos[1]),
+                width,
+                height,
+                facecolor='none',
+                edgecolor='none',
+                linewidth=0,
+                zorder=2.1)
+            svg_annotation.set_gid(make_annotation_gid(id(svg_annotation)))
+            svg_annotation._pystrat_annotation_svg_path = str(svg_path)
+            ax.add_patch(svg_annotation)
+            ax.autoscale(False)
+            return
+
+        warnings.warn(
+            f'Annotation SVG for {annotation_path} was not found. Falling back to raster export.'
+        )
 
     # try to load the annotation image
     try:
@@ -1795,16 +1882,13 @@ def plot_annotation(annotation_path, pos, height, ax,):
 
     # convert to numpy array
     ann_arr = np.array(annotation)
-    
-    # axis inches per data unit
-    aspect_axis = get_axis_aspect(ax)
 
     # size of image
-    dx, dy= annotation.size  # in pixels
+    dx, dy = annotation.size  # in pixels
     aspect_ann = dy / dx
-    width = height/aspect_ann*aspect_axis
+    width = height / aspect_ann * aspect_axis
 
-    extent = [pos[0], pos[0]+width, pos[1], pos[1]+height]
+    extent = [pos[0], pos[0] + width, pos[1], pos[1] + height]
 
     ax.imshow(ann_arr, extent=extent, zorder=2, aspect='auto')
     ax.autoscale(False)
