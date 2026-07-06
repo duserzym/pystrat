@@ -1,4 +1,4 @@
-"""SVG export helpers for matplotlib pystrat figures."""
+"""Helpers for injecting vector-friendly SVG output from ``matplotlib`` figures."""
 
 from __future__ import annotations
 
@@ -35,6 +35,18 @@ ET.register_namespace("xlink", XLINK_NS)
 
 
 def svg_tag(tag):
+    """Return a namespaced SVG tag name.
+
+    Parameters
+    ----------
+    tag : str
+        Unnamespaced SVG tag name.
+
+    Returns
+    -------
+    str
+        Tag name with SVG namespace applied.
+    """
     return f"{{{SVG_NS}}}{tag}"
 
 
@@ -55,6 +67,7 @@ def format_style(style):
 
 
 def swatch_svg_path(swatch_code):
+    """Resolve a swatch code to the corresponding SVG file."""
     swatch_code = int(swatch_code)
     swatch_path = resources.files("pystrat").joinpath("swatches_svg", f"{swatch_code}.svg")
     if not swatch_path.is_file():
@@ -63,6 +76,7 @@ def swatch_svg_path(swatch_code):
 
 
 def svg_viewbox_parts(svg_root):
+    """Return `(x, y, width, height, viewBox)` from an SVG root node."""
     view_box = svg_root.attrib.get("viewBox")
     if view_box:
         parts = [float(x) for x in view_box.replace(",", " ").split()]
@@ -74,11 +88,13 @@ def svg_viewbox_parts(svg_root):
 
 
 def svg_viewbox_size(svg_root):
+    """Return the viewbox size as width, height, and viewBox string."""
     view_x, view_y, width, height, view_box = svg_viewbox_parts(svg_root)
     return width, height, view_box
 
 
 def svg_file_viewbox_size(svg_path):
+    """Return the viewbox size for an SVG file path."""
     svg_root = ET.parse(svg_path).getroot()
     return svg_viewbox_size(svg_root)
 
@@ -159,16 +175,19 @@ def shape_bbox(shape):
 
 
 def make_swatch_gid(swatch_code, unique_id=None):
+    """Build a stable group id for swatch patch placeholders."""
     if unique_id is None:
         return f"pystrat-swatch-{int(swatch_code)}"
     return f"pystrat-swatch-{int(swatch_code)}-{unique_id}"
 
 
 def make_annotation_gid(unique_id):
+    """Build a stable group id for annotation patch placeholders."""
     return f"pystrat-annotation-{unique_id}"
 
 
 def make_pattern_def(swatch_code, pattern_id, tile_width_pt, pattern_x=None, pattern_y=None):
+    """Create a repeatable fill pattern definition for a swatch code."""
     swatch_tree = ET.parse(swatch_svg_path(swatch_code))
     swatch_root = swatch_tree.getroot()
     view_w, view_h, view_box = svg_viewbox_size(swatch_root)
@@ -201,6 +220,19 @@ def inject_swatch_patterns(
     tile_width_pt=108.0,
     center_patterns=True,
 ):
+    """Inject swatch fill patterns into a saved SVG figure.
+
+    Parameters
+    ----------
+    svg_path : str or Path
+        Source SVG file to process.
+    output_path : str or Path, optional
+        Output file path. Defaults to overwrite ``svg_path``.
+    tile_width_pt : float
+        Pattern tile width in points.
+    center_patterns : bool
+        If ``True``, center each pattern inside its source shape.
+    """
     svg_path = Path(svg_path)
     output_path = Path(output_path) if output_path is not None else svg_path
 
@@ -227,8 +259,11 @@ def inject_swatch_patterns(
                 pattern_x = x + width / 2 - tile_width_pt / 2
                 pattern_y = y + height / 2 - tile_width_pt / 2
             style = parse_style(shape.attrib.get("style"))
+            if "fill" in shape.attrib:
+                style["fill"] = shape.attrib.get("fill")
             style["fill"] = f"url(#{pattern_id})"
             style.pop("fill-opacity", None)
+            shape.set("fill", f"url(#{pattern_id})")
             shape.set("style", format_style(style))
             pattern_specs.append((code, pattern_id, pattern_x, pattern_y))
 
@@ -248,6 +283,7 @@ def inject_swatch_patterns(
 
 
 def inject_swatch_previews(svg_path, output_path=None):
+    """Replace swatch placeholders with actual swatch vector content."""
     svg_path = Path(svg_path)
     output_path = Path(output_path) if output_path is not None else svg_path
 
@@ -293,6 +329,7 @@ def inject_swatch_previews(svg_path, output_path=None):
 
 
 def inject_annotation_previews(svg_path, annotation_paths, output_path=None):
+    """Replace annotation placeholders with their linked SVG vector content."""
     svg_path = Path(svg_path)
     output_path = Path(output_path) if output_path is not None else svg_path
 
@@ -341,6 +378,7 @@ def inject_annotation_previews(svg_path, annotation_paths, output_path=None):
 
 
 def collect_annotation_svgs(fig):
+    """Collect any annotation SVG placeholders emitted by ``plot_annotation``."""
     annotation_paths = {}
     for artist in fig.findobj():
         get_gid = getattr(artist, "get_gid", None)
@@ -356,6 +394,19 @@ def collect_annotation_svgs(fig):
 
 
 def savefig_svg(fig, output_path, tile_width_pt=108.0, **savefig_kwargs):
+    """Save a matplotlib figure as SVG with vector-backed swatches and annotations.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        Figure to save.
+    output_path : str or Path
+        Target SVG output path.
+    tile_width_pt : float
+        Tile width passed to :func:`inject_swatch_patterns`.
+    **savefig_kwargs
+        Forwarded to ``Figure.savefig``.
+    """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     savefig_kwargs.setdefault("format", "svg")
@@ -375,11 +426,13 @@ def savefig_svg(fig, output_path, tile_width_pt=108.0, **savefig_kwargs):
 
 
 def available_svg_swatches():
+    """Return sorted available swatch codes from the SVG swatch bundle."""
     swatch_dir = resources.files("pystrat").joinpath("swatches_svg")
     return sorted(int(path.name.split(".")[0]) for path in swatch_dir.iterdir() if path.name.endswith(".svg"))
 
 
 def plot_svg_swatch_catalog(output_path, columns=10):
+    """Create and save a vector swatch catalog image."""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     codes = available_svg_swatches()

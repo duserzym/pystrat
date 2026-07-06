@@ -22,12 +22,6 @@ from .svg_swatches import make_annotation_gid, make_swatch_gid, svg_file_viewbox
 ##
 mod_dir = os.path.dirname(os.path.realpath(__file__))
 DEFAULT_ANNOTATION_EXTENSIONS = {'.png', '.svg'}
-DEFAULT_ANNOTATION_SVG_ALIASES = {
-    'black shale': 'black_shale',
-    'climbing ripples': 'climbing_ripples',
-    'hcs': 'hummocky',
-    'wave ripples': 'wave_ripples',
-}
 
 
 def default_annotation_names():
@@ -45,26 +39,14 @@ def default_annotation_png_path(annotation_name):
 
 def resolve_annotation_svg_path(annotation_path):
     annotation_path = Path(os.fspath(annotation_path))
-    stem = annotation_path.stem
-    candidate_paths = [annotation_path if annotation_path.suffix.lower() == '.svg' else annotation_path.with_suffix('.svg')]
+    if annotation_path.suffix.lower() == '.svg':
+        if annotation_path.is_file():
+            return annotation_path
+        return None
 
-    for alt_stem in (
-        stem.replace(' ', '_'),
-        stem.replace('_', ' '),
-        DEFAULT_ANNOTATION_SVG_ALIASES.get(stem),
-    ):
-        if alt_stem is None:
-            continue
-        candidate_paths.append(annotation_path.with_name(f'{alt_stem}.svg'))
-
-    seen = set()
-    for candidate_path in candidate_paths:
-        candidate_key = os.fspath(candidate_path)
-        if candidate_key in seen:
-            continue
-        seen.add(candidate_key)
-        if candidate_path.is_file():
-            return candidate_path
+    svg_path = annotation_path.with_suffix('.svg')
+    if svg_path.is_file():
+        return svg_path
 
     return None
 
@@ -782,10 +764,13 @@ class Section:
             this_thickness = self.thicknesses[i]
 
             # loop over the elements in Style to get the color and width
+            this_swatch = None
             for j in range(style.n_labels):
                 if self.facies[i] == style.labels[j]:
                     this_color = style.color_values[j]
                     this_width = style.width_values[j]
+                    if style.swatch_values is not None:
+                        this_swatch = style.swatch_values[j]
 
             # create the rectangle
             ax.add_patch(
@@ -799,30 +784,16 @@ class Section:
             # if swatch is defined, plot it
             # if style.swatch_values[0] != None:
             ax.autoscale(False)
-            if style.swatch_values is not None:
-                for j in range(style.n_labels):
-                    if self.facies[i] == style.labels[j]:
-                        this_swatch = style.swatch_values[j]
-                        if this_swatch == 0:
-                            continue
-                        extent = [
-                            0, this_width, strat_height,
-                            strat_height + this_thickness
-                        ]
-                        if swatch_backend == 'svg':
-                            svg_swatch = Rectangle(
-                                (extent[0], extent[2]),
-                                extent[1] - extent[0],
-                                extent[3] - extent[2],
-                                facecolor='none',
-                                edgecolor='none',
-                                linewidth=0,
-                                zorder=2.1)
-                            svg_swatch.set_gid(make_swatch_gid(this_swatch, i))
-                            ax.add_patch(svg_swatch)
-                        elif swatch_backend == 'png':
-                            plot_swatch(this_swatch, extent, ax,
-                                        swatch_wid=style.swatch_wid)
+            if this_swatch:
+                extent = [0, this_width, strat_height, strat_height + this_thickness]
+                plot_swatch(
+                    this_swatch,
+                    extent,
+                    ax,
+                    swatch_wid=style.swatch_wid,
+                    backend=swatch_backend,
+                    swatch_gid=make_swatch_gid(this_swatch, i),
+                )
 
             # count the stratigraphic height
             strat_height = strat_height + this_thickness
@@ -1409,7 +1380,7 @@ class Style():
     annotations : list, dict, or None
         Specification of annotations to plot alongside sections, by default None. 
         If None, no annotations are plotted. 
-        User can also provide a list of annotation names to select among the default annotations to plot. See :py:meth:`Style.plot_default_annotations()` for the default annotations provided by pystrat.
+        User can also provide a list of annotation names to select among the default annotations to plot. Names must match the stem of annotation files exactly. See :py:meth:`Style.plot_default_annotations()` for the default annotations provided by pystrat.
         Alternatively, the user can provide a dictionary linking annotation names to png file paths for plotting custom annotations.
     swatch_wid : float (default 1.5)
         Width of the swatch pattern in inches.
@@ -1453,18 +1424,15 @@ class Style():
         if annotations is not None:
             if isinstance(annotations, list):
                 # check that all annotations are in the default set
-                default_annotations = default_annotation_names()
-                validated_annotations = []
+                default_annotations = set(default_annotation_names())
+                validated_annotations = {}
                 for annotation in annotations:
                     if annotation not in default_annotations:
                         warnings.warn(f'Annotation {annotation} not in default set and will not be plotted.')
                         continue
-                    validated_annotations.append(annotation)
+                    validated_annotations[annotation] = default_annotation_png_path(annotation)
                 # make into dictionary with paths to default pngs
-                annotations = {
-                    annotation: default_annotation_png_path(annotation)
-                    for annotation in validated_annotations
-                }
+                annotations = validated_annotations
             # if annotations are a dictionary
             elif isinstance(annotations, dict):
                 validated_annotations = {}
@@ -1621,20 +1589,14 @@ class Style():
                     extent = [
                         0, width_values[i], strat_height, strat_height + 1
                     ]
-                    if swatch_backend == 'svg':
-                        svg_swatch = Rectangle(
-                            (extent[0], extent[2]),
-                            extent[1] - extent[0],
-                            extent[3] - extent[2],
-                            facecolor='none',
-                            edgecolor='none',
-                            linewidth=0,
-                            zorder=2.1)
-                        svg_swatch.set_gid(make_swatch_gid(swatch_values[i], i))
-                        ax.add_patch(svg_swatch)
-                    elif swatch_backend == 'png':
-                        plot_swatch(swatch_values[i], extent, ax,
-                                    swatch_wid=self.swatch_wid)
+                    plot_swatch(
+                        swatch_values[i],
+                        extent,
+                        ax,
+                        swatch_wid=self.swatch_wid,
+                        backend=swatch_backend,
+                        swatch_gid=make_swatch_gid(swatch_values[i], i),
+                    )
 
             # label the unit
             # ax.text(-0.01,
@@ -1749,7 +1711,7 @@ def attribute_convert_and_check(attribute):
     return attribute
 
 
-def plot_swatch(swatch_code, extent, ax, swatch_wid=1.5, warn_size=False):
+def plot_swatch(swatch_code, extent, ax, swatch_wid=1.5, warn_size=False, backend='png', swatch_gid=None):
     """Plot a tesselated USGS geologic swatch to fit a desired extent
 
     Parameters
@@ -1768,9 +1730,16 @@ def plot_swatch(swatch_code, extent, ax, swatch_wid=1.5, warn_size=False):
 
     warn_size : boolean (default: False)
         Whether or not to issue warnings on swatch sizes.
+
+    backend : {'png', 'svg'}
+        Swatch rendering backend.
+
+    swatch_gid : str or None
+        Optional gid to set on SVG swatch rectangles.
     """
 
     x0, x1, y0, y1 = extent
+    swatch_code = int(swatch_code) # make sure integer
 
     # dimensions of extent (data coordinates)
     dx_ex = x1 - x0
@@ -1782,8 +1751,25 @@ def plot_swatch(swatch_code, extent, ax, swatch_wid=1.5, warn_size=False):
                 'Extent has no width and/or height. Swatch cannot be plotted.')
         return
 
+    if backend == 'svg':
+        svg_swatch = Rectangle(
+            (x0, y0),
+            dx_ex,
+            dy_ex,
+            facecolor='none',
+            edgecolor='none',
+            linewidth=0,
+            zorder=2.1)
+        if swatch_gid is not None:
+            svg_swatch.set_gid(swatch_gid)
+        ax.add_patch(svg_swatch)
+        ax.autoscale(False)
+        return
+
+    if backend not in ('png', 'svg'):
+        raise ValueError("backend must be 'png' or 'svg'")
+
     # load swatch, use swatch code as file name
-    swatch_code = int(swatch_code) # make sure integer
     swatch_path = resources.files('pystrat') / 'swatches' / f'{swatch_code}.png'
     # try to open swatch
     try:
@@ -1870,8 +1856,9 @@ def plot_annotation(annotation_path, pos, height, ax, backend='png'):
             return
 
         warnings.warn(
-            f'Annotation SVG for {annotation_path} was not found. Falling back to raster export.'
+            f'Annotation SVG for {annotation_path} was not found. Skipping annotation in SVG output.'
         )
+        return
 
     # try to load the annotation image
     try:
